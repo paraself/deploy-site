@@ -9,11 +9,22 @@ export interface Version {
 export declare type DeployType = 'major' | 'minor' | 'patch';
 interface SiteSetting<IDType> {
     name: string;
-    deployPath: string;
-    host: string[];
+    host: string | string[];
     protocol: string[];
     key: string;
-    route: string;
+    /**
+     * 路由, 或者 路由-路径 的映射列表
+     */
+    route?: string | {
+        [key: string]: string | string[];
+    };
+    resultCallback?: (err?: {
+        name: string;
+        error: string;
+    }, msg?: {
+        name: string;
+        id: IDType;
+    }) => void;
 }
 declare type SaveCallback<T> = (params: {
     name: string;
@@ -49,22 +60,24 @@ declare type ChangeCurrentDeployCallback<T> = (params: {
     name: string;
 }>;
 interface ConstructorParam<IDType> {
+    groupName: string;
     sites: SiteSetting<IDType>[];
     redisUrl?: string;
     tmpPath: string;
+    deployPath: string;
     saveCallback: SaveCallback<IDType>;
     restoreCallback: RestoreCallback<IDType>;
     changeCurrentDeployCallback: ChangeCurrentDeployCallback<IDType>;
-    resultCallback?: (err: any, msg: any) => void;
 }
 export declare class DeploySite<IDType> {
+    private channel;
     private redisSub?;
     private redisPub?;
     private multer;
     private saveCallback;
     private restoreCallback;
     private changeCurrentDeployCallback;
-    private resultCallback;
+    private deployPath;
     private siteSettings;
     constructor(params: ConstructorParam<IDType>);
     setDeploy(params: {
