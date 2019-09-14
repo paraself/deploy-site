@@ -17,6 +17,7 @@ const multer_1 = __importDefault(require("multer"));
 const fs_1 = __importDefault(require("fs"));
 const util = __importStar(require("./util"));
 const path_1 = __importDefault(require("path"));
+const express_route_reload_1 = require("express-route-reload");
 const unzip = require('unzip-stream');
 const vhost = require('vhost');
 // interface DeploySetting<T> extends ConstructorParam<T>{
@@ -24,26 +25,42 @@ const vhost = require('vhost');
 //     redisPub?:Redis.Redis
 //     multer:multer.Instance
 // }
-const CHANNEL_PREFIX = 'deploy-site-channel:';
+const CHANNEL_DEPLOY_PREFIX = 'deploy-site-channel:deploy:';
+const CHANNEL_SETSITES_PREFIX = 'deploy-site-channel:setsites:';
 // let channel = CHANNEL_PREFIX
 class DeploySite {
     constructor(params) {
-        // private resultCallback: (err?:{name:string,error:string}, msg?:any) =>void
-        this.siteSettings = [];
+        this.hostRouter = new express_route_reload_1.ReloadRouter();
+        this.uploadRouter = new express_route_reload_1.ReloadRouter();
         this.siteSettings = params.sites;
         this.multer = multer_1.default({ dest: params.tmpPath });
         this.saveCallback = params.saveCallback;
         this.restoreCallback = params.restoreCallback;
         this.changeCurrentDeployCallback = params.changeCurrentDeployCallback;
-        this.channel = CHANNEL_PREFIX + params.groupName;
+        this.channelDeploy = CHANNEL_DEPLOY_PREFIX + params.groupName;
+        this.channelSetsites = CHANNEL_SETSITES_PREFIX + params.groupName;
         this.deployPath = params.deployPath;
         // this.resultCallback = params.resultCallback || function(x,y){}
         if (params.redisUrl) {
             this.redisSub = new ioredis_1.default(params.redisUrl, { maxRetriesPerRequest: null });
             this.redisPub = new ioredis_1.default(params.redisUrl, { maxRetriesPerRequest: null });
-            this.redisSub.subscribe(this.channel);
-            this.redisSub.on('message', (channel, message) => this.handleRedisMessage(message));
+            this.redisSub.subscribe(this.channelDeploy);
+            this.redisSub.subscribe(this.channelSetsites);
+            this.redisSub.on('message', (channel, message) => {
+                if (channel == this.channelDeploy) {
+                    this.handleRedisDeployMessage(message);
+                }
+                else if (channel == this.channelSetsites) {
+                    this.handleRedisResetSiteMessage();
+                }
+            });
         }
+        let defaultRouter = express_1.Router();
+        defaultRouter.get('/', (req, res, next) => {
+            res.send('');
+        });
+        this.hostRouter.reload([defaultRouter]);
+        this.setSites();
     }
     async setDeploy(params) {
         let results = await this.restoreCallback({ id: params.id });
@@ -55,7 +72,7 @@ class DeploySite {
         let name = result.name;
         if (this.redisPub) {
             console.log(name + ' 部署版本改变为 id ' + params.id + ' 发送部署消息');
-            this.redisPub.publish(this.channel, name);
+            this.redisPub.publish(this.channelDeploy, name);
         }
         else {
             console.log(name + ' 部署版本改变为 id ' + params.id + ' 部署本机');
@@ -63,15 +80,50 @@ class DeploySite {
         }
     }
     /**
+     * 通过 this.siteSettings 重新设置网站配置信息,并重新部署
+     */
+    async resetSites() {
+        if (this.redisPub) {
+            console.log('重设部署设置-发送消息');
+            this.redisPub.publish(this.channelSetsites, '');
+        }
+        else {
+            console.log('重设部署设置');
+            await this.setSites();
+            // await this.deploy()
+        }
+    }
+    async getSites() {
+        let siteSettings;
+        if (typeof this.siteSettings == 'function') {
+            siteSettings = await this.siteSettings();
+        }
+        else {
+            siteSettings = this.siteSettings;
+        }
+        return siteSettings;
+    }
+    /**
+     * 应用网站配置信息
+     */
+    async setSites() {
+        let siteSettings = await this.getSites();
+        this.hostRouter.reload([this._routerHost(siteSettings)]);
+        this.uploadRouter.reload([this._routerUpload(siteSettings)]);
+    }
+    /**
      * 根路由必须加载 bodyParser
      */
     routerUpload() {
+        return this.uploadRouter.handler();
+    }
+    _routerUpload(siteSettings) {
         let router = express_1.Router();
         // router.use(bodyParser.json());
         // router.use(bodyParser.urlencoded({
         //     extended: false
         // }));
-        this.siteSettings.forEach(e => {
+        siteSettings.forEach(e => {
             // let app = Router()
             // console.log('create routerUpload for '+ e.name+' '+e.route)
             // const host = e.host
@@ -135,12 +187,15 @@ class DeploySite {
         return router;
     }
     routerHost() {
+        return this.hostRouter.handler();
+    }
+    _routerHost(siteSettings) {
         let router = express_1.Router();
         // router.use(bodyParser.json());
         // router.use(bodyParser.urlencoded({
         //     extended: false
         // }));
-        this.siteSettings.forEach(e => {
+        siteSettings.forEach(e => {
             console.log('create routerHost for ' + e.name);
             let app = express_1.Router();
             let deployPath = path_1.default.join(this.deployPath, encodeURIComponent(e.name));
@@ -200,9 +255,10 @@ class DeploySite {
      *
      * @param name 指定部署的网站,空则全部部署
      */
-    async deploy(name) {
+    async deploy(name, siteSettings) {
+        siteSettings = siteSettings || await this.getSites();
         if (name) {
-            let site = this.siteSettings.find(x => x.name == name);
+            let site = siteSettings.find(x => x.name == name);
             if (!site) {
                 throw new Error('Can find site ' + name);
             }
@@ -216,23 +272,38 @@ class DeploySite {
             }
             return this._deploy({
                 path: path_1.default.join(this.deployPath, encodeURIComponent(name)),
-                zipUrl: deploy[0].zipUrl
+                //@ts-ignore
+                zipUrl: deploy[0].zipUrl,
+                //@ts-ignore
+                zipPath: deploy[0].zipPath
             });
         }
         else {
-            for (let i = 0; i < this.siteSettings.length; ++i) {
-                await this.deploy(this.siteSettings[i].name);
+            let list = [];
+            for (let i = 0; i < siteSettings.length; ++i) {
+                list.push(this.deploy(siteSettings[i].name, siteSettings));
             }
+            return Promise.all(list);
         }
     }
-    handleRedisMessage(name) {
+    handleRedisDeployMessage(name) {
         console.log('分组接收部署通知 ' + name);
         this.deploy(name);
     }
+    async handleRedisResetSiteMessage() {
+        console.log('分组接收更新网站配置通知' + name);
+        await this.setSites();
+        // await this.deploy()
+    }
     async _deploy(params) {
-        console.log('_deploy:' + params.zipUrl + ' -> ' + params.path);
-        let file = await util.tmpFileFromUrl(params.zipUrl);
-        fs_1.default.createReadStream(file.path).pipe(unzip.Extract({ path: params.path }));
+        console.log('_deploy:' + params.zipUrl || params.zipPath + ' -> ' + params.path);
+        if (params.zipUrl) {
+            let file = await util.tmpFileFromUrl(params.zipUrl);
+            fs_1.default.createReadStream(file.path).pipe(unzip.Extract({ path: params.path }));
+        }
+        else if (params.zipPath) {
+            fs_1.default.createReadStream(params.zipPath).pipe(unzip.Extract({ path: params.path }));
+        }
     }
 }
 exports.DeploySite = DeploySite;

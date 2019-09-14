@@ -1,4 +1,4 @@
-import { Router, Request,Response, NextFunction } from "express";
+import { Router, Request,Response, NextFunction, RequestHandler } from "express";
 import express from "express";
 import Redis from 'ioredis'
 import multer from 'multer'
@@ -6,6 +6,7 @@ import fs, { ReadStream } from 'fs'
 import bodyParser from 'body-parser'
 import * as util from './util'
 import path from 'path'
+import {ReloadRouter} from "express-route-reload";
 const unzip = require('unzip-stream')
 const vhost = require('vhost')
 
@@ -39,6 +40,10 @@ type SaveCallback<T> = (
         version:Version
     })=>Promise<T>
 
+// type RestoreCallbackReturn1<A> = { name:string, current:boolean , type:DeployType, version: Version,zipUrl:string, id:A }
+// type RestoreCallbackReturn2<A> = { name:string, current:boolean , type:DeployType, version: Version,zipPath:string, id:A }
+// type RestoreCallbackReturn<A> = RestoreCallbackReturn1<A> | RestoreCallbackReturn2<A>
+type RestoreCallbackReturn<A> = { name:string, current:boolean , type:DeployType, version: Version,zipUrl?:string,zipPath?:string, id:A }
 type RestoreCallback<A> = (
     params: {
     name?:string
@@ -54,15 +59,17 @@ type RestoreCallback<A> = (
      * 只返回指定的id的内容
      */
     id?:A
-})=> Promise< { name:string, current:boolean , type:DeployType, version: Version,zipUrl:string, id:A }[] >
+})=> Promise< RestoreCallbackReturn<A>[] >
 
 type ChangeCurrentDeployCallback<T> = (params: {
     id:T
 })=>Promise< {name:string} >
 
+export type SiteSettingFunction<IDType> = ()=>Promise<SiteSetting<IDType>[]>
+
 interface ConstructorParam<IDType>{
     groupName:string
-    sites:SiteSetting<IDType>[],
+    sites:SiteSetting<IDType>[] | SiteSettingFunction<IDType>,
     redisUrl?:string
     tmpPath:string
     deployPath:string
@@ -79,10 +86,12 @@ interface ConstructorParam<IDType>{
 //     multer:multer.Instance
 // }
 
-const CHANNEL_PREFIX = 'deploy-site-channel:'
+const CHANNEL_DEPLOY_PREFIX = 'deploy-site-channel:deploy:'
+const CHANNEL_SETSITES_PREFIX = 'deploy-site-channel:setsites:'
 // let channel = CHANNEL_PREFIX
 export class DeploySite<IDType>{
-    private channel:string
+    private channelDeploy:string
+    private channelSetsites:string
     private redisSub?:Redis.Redis
     private redisPub?:Redis.Redis
     private multer:multer.Instance
@@ -94,22 +103,38 @@ export class DeploySite<IDType>{
     private deployPath:string
     // private resultCallback: (err?:{name:string,error:string}, msg?:any) =>void
 
-    private siteSettings:SiteSetting<IDType>[]  = []
+    public siteSettings:SiteSetting<IDType>[]|SiteSettingFunction<IDType>
+    private hostRouter = new ReloadRouter();
+    private uploadRouter:ReloadRouter = new ReloadRouter();
     constructor(params:ConstructorParam<IDType>){
         this.siteSettings = params.sites
         this.multer = multer({dest:params.tmpPath})
         this.saveCallback = params.saveCallback
         this.restoreCallback = params.restoreCallback
         this.changeCurrentDeployCallback = params.changeCurrentDeployCallback
-        this.channel = CHANNEL_PREFIX+params.groupName
+        this.channelDeploy = CHANNEL_DEPLOY_PREFIX+params.groupName
+        this.channelSetsites = CHANNEL_SETSITES_PREFIX+params.groupName
         this.deployPath = params.deployPath
         // this.resultCallback = params.resultCallback || function(x,y){}
         if(params.redisUrl){
             this.redisSub = new Redis(params.redisUrl,{maxRetriesPerRequest: null})
             this.redisPub = new Redis(params.redisUrl,{maxRetriesPerRequest: null})
-            this.redisSub.subscribe(this.channel)
-            this.redisSub.on('message', (channel, message)=>this.handleRedisMessage(message))
+            this.redisSub.subscribe(this.channelDeploy)
+            this.redisSub.subscribe(this.channelSetsites)
+            this.redisSub.on('message', (channel, message)=>{
+                if(channel==this.channelDeploy){
+                    this.handleRedisDeployMessage(message)
+                }else if(channel==this.channelSetsites){
+                    this.handleRedisResetSiteMessage()
+                }
+            })
         }
+        let defaultRouter = Router()
+        defaultRouter.get('/', (req, res, next)=>{
+            res.send('')
+        })
+        this.hostRouter.reload([defaultRouter])
+        this.setSites()
     }
     async setDeploy(params:{id:IDType}):Promise<void> {
         let results = await this.restoreCallback({id:params.id})
@@ -121,7 +146,7 @@ export class DeploySite<IDType>{
         let name = result.name
         if(this.redisPub){
             console.log(name+' 部署版本改变为 id '+params.id+' 发送部署消息')
-            this.redisPub.publish(this.channel,name)
+            this.redisPub.publish(this.channelDeploy,name)
         }else{
             console.log(name+' 部署版本改变为 id '+params.id+' 部署本机')
             this.deploy(name)
@@ -129,15 +154,51 @@ export class DeploySite<IDType>{
     }
 
     /**
+     * 通过 this.siteSettings 重新设置网站配置信息,并重新部署
+     */
+    async resetSites(){
+        if(this.redisPub){
+            console.log('重设部署设置-发送消息')
+            this.redisPub.publish(this.channelSetsites,'')
+        }else{
+            console.log('重设部署设置')
+            await this.setSites()
+            // await this.deploy()
+        }
+    }
+
+    async getSites(){
+        let siteSettings: SiteSetting<IDType>[]
+        if(typeof this.siteSettings == 'function'){
+            siteSettings = await this.siteSettings()
+        }else{
+            siteSettings = this.siteSettings
+        }
+        return siteSettings
+    }
+
+    /**
+     * 应用网站配置信息
+     */
+    private async setSites(){
+        let siteSettings = await this.getSites()
+        this.hostRouter.reload([this._routerHost(siteSettings)])
+        this.uploadRouter.reload([this._routerUpload(siteSettings)])
+    }
+
+    /**
      * 根路由必须加载 bodyParser
      */
-    routerUpload():Router{
+    routerUpload():RequestHandler{
+        return this.uploadRouter.handler()
+    }
+    private _routerUpload(siteSettings: SiteSetting<IDType>[]):Router{
         let router = Router()
         // router.use(bodyParser.json());
         // router.use(bodyParser.urlencoded({
         //     extended: false
         // }));
-        this.siteSettings.forEach(e=>{
+        siteSettings.forEach(e=>{
             // let app = Router()
             // console.log('create routerUpload for '+ e.name+' '+e.route)
             // const host = e.host
@@ -201,13 +262,16 @@ export class DeploySite<IDType>{
         return router
     }
 
-    routerHost():Router{
+    routerHost():RequestHandler{
+        return this.hostRouter.handler()
+    }
+    private _routerHost(siteSettings: SiteSetting<IDType>[]):Router{
         let router = Router()
         // router.use(bodyParser.json());
         // router.use(bodyParser.urlencoded({
         //     extended: false
         // }));
-        this.siteSettings.forEach(e=>{
+        siteSettings.forEach(e=>{
             console.log('create routerHost for '+ e.name)
             let app = Router()
             let deployPath = path.join(this.deployPath,encodeURIComponent(e.name))
@@ -267,9 +331,10 @@ export class DeploySite<IDType>{
      * 
      * @param name 指定部署的网站,空则全部部署
      */
-    async deploy(name?:string){
+    async deploy(name?:string,siteSettings?: SiteSetting<IDType>[]){
+        siteSettings = siteSettings || await this.getSites()
         if(name){
-            let site = this.siteSettings.find(x=>x.name==name)
+            let site = siteSettings.find(x=>x.name==name)
             if(!site){
                 throw new Error('Can find site '+name)
             }
@@ -283,25 +348,42 @@ export class DeploySite<IDType>{
             }
             return this._deploy({
                 path:path.join(this.deployPath,encodeURIComponent(name)),
-                zipUrl:deploy[0].zipUrl
+                //@ts-ignore
+                zipUrl:deploy[0].zipUrl,
+                //@ts-ignore
+                zipPath:deploy[0].zipPath
             })
         }else{
-            for(let i=0;i<this.siteSettings.length;++i){
-                await this.deploy(this.siteSettings[i].name)
+            let list:Promise<any>[] = []
+            for(let i=0;i<siteSettings.length;++i){
+                list.push( this.deploy(siteSettings[i].name,siteSettings) )
             }
+            return Promise.all(list)
         }
     }
 
-    private handleRedisMessage(name:string){
+    private handleRedisDeployMessage(name:string){
         console.log('分组接收部署通知 '+name)
         this.deploy(name)
     }
+
+    private async handleRedisResetSiteMessage(){
+        console.log('分组接收更新网站配置通知'+name)
+        await this.setSites()
+        // await this.deploy()
+    }
+
     private async _deploy( params:{
         path:string
-        zipUrl:string
+        zipUrl?:string
+        zipPath?:string
     } ){
-        console.log('_deploy:'+params.zipUrl+' -> '+params.path )
-        let file = await util.tmpFileFromUrl(params.zipUrl)
-        fs.createReadStream(file.path).pipe(unzip.Extract({ path: params.path }))
+        console.log('_deploy:'+params.zipUrl||params.zipPath+' -> '+params.path )
+        if(params.zipUrl){
+            let file = await util.tmpFileFromUrl(params.zipUrl)
+            fs.createReadStream(file.path).pipe(unzip.Extract({ path: params.path }))
+        }else if(params.zipPath){
+            fs.createReadStream(params.zipPath).pipe(unzip.Extract({ path: params.path }))
+        }
     }
 }

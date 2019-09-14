@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { Router } from "express";
+import { RequestHandler } from "express";
 import { ReadStream } from 'fs';
 export interface Version {
     major: number;
@@ -32,6 +32,15 @@ declare type SaveCallback<T> = (params: {
     type: DeployType;
     version: Version;
 }) => Promise<T>;
+declare type RestoreCallbackReturn<A> = {
+    name: string;
+    current: boolean;
+    type: DeployType;
+    version: Version;
+    zipUrl?: string;
+    zipPath?: string;
+    id: A;
+};
 declare type RestoreCallback<A> = (params: {
     name?: string;
     /**
@@ -46,22 +55,16 @@ declare type RestoreCallback<A> = (params: {
      * 只返回指定的id的内容
      */
     id?: A;
-}) => Promise<{
-    name: string;
-    current: boolean;
-    type: DeployType;
-    version: Version;
-    zipUrl: string;
-    id: A;
-}[]>;
+}) => Promise<RestoreCallbackReturn<A>[]>;
 declare type ChangeCurrentDeployCallback<T> = (params: {
     id: T;
 }) => Promise<{
     name: string;
 }>;
+export declare type SiteSettingFunction<IDType> = () => Promise<SiteSetting<IDType>[]>;
 interface ConstructorParam<IDType> {
     groupName: string;
-    sites: SiteSetting<IDType>[];
+    sites: SiteSetting<IDType>[] | SiteSettingFunction<IDType>;
     redisUrl?: string;
     tmpPath: string;
     deployPath: string;
@@ -70,7 +73,8 @@ interface ConstructorParam<IDType> {
     changeCurrentDeployCallback: ChangeCurrentDeployCallback<IDType>;
 }
 export declare class DeploySite<IDType> {
-    private channel;
+    private channelDeploy;
+    private channelSetsites;
     private redisSub?;
     private redisPub?;
     private multer;
@@ -78,22 +82,36 @@ export declare class DeploySite<IDType> {
     private restoreCallback;
     private changeCurrentDeployCallback;
     private deployPath;
-    private siteSettings;
+    siteSettings: SiteSetting<IDType>[] | SiteSettingFunction<IDType>;
+    private hostRouter;
+    private uploadRouter;
     constructor(params: ConstructorParam<IDType>);
     setDeploy(params: {
         id: IDType;
     }): Promise<void>;
     /**
+     * 通过 this.siteSettings 重新设置网站配置信息,并重新部署
+     */
+    resetSites(): Promise<void>;
+    getSites(): Promise<SiteSetting<IDType>[]>;
+    /**
+     * 应用网站配置信息
+     */
+    private setSites;
+    /**
      * 根路由必须加载 bodyParser
      */
-    routerUpload(): Router;
-    routerHost(): Router;
+    routerUpload(): RequestHandler;
+    private _routerUpload;
+    routerHost(): RequestHandler;
+    private _routerHost;
     /**
      *
      * @param name 指定部署的网站,空则全部部署
      */
-    deploy(name?: string): Promise<void>;
-    private handleRedisMessage;
+    deploy(name?: string, siteSettings?: SiteSetting<IDType>[]): Promise<void | any[]>;
+    private handleRedisDeployMessage;
+    private handleRedisResetSiteMessage;
     private _deploy;
 }
 export {};
