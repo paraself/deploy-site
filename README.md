@@ -1,6 +1,6 @@
 # deploy-site
 
-使用例子
+## 接口说明与使用例子
 ```typescript
 import AV from 'leancloud-storage'
 import { DeploySite, Version, DeployType } from 'deploy-site'
@@ -131,3 +131,28 @@ app.use('/', deploySite.routerHost())
 // 因为网站的路由为 '/' 要比部署路由后注册, 否则上传部署时会先符合网站路由的规则, 导致访问的是网站路由
 
 ```
+## 数据表结构
+### DeployConfig表
+用于部署配置
+```
+name:string -- 部署名, 用以标示不同的网站提交内容
+key:string -- 部署key, 用以认证部署提交
+route:{[key:string]:string} -- 路由-文件夹路径 的映射列表 . 留空表示根路由使用根目录
+host:string[] -- 访问此网站的域名
+link: string -- 部署信息提示工具中的链接, 用了指向部署的目标网站
+```
+
+### Deploy表
+作为部署实例, 用于部署记录, 和存储部署包内容
+```
+name:string -- 部署名, 和 Deploy表 中的name对应
+file:AV.File -- 部署内容的压缩文件
+type:'patch'|'minor'|'major'  -- 版本推进类型
+current:boolean -- 是否是此name配置下当前使用的版本, 一个name下只能有一个current为true的部署
+version:{patch:number,minor:number,major:number} -- 此部署的版本
+```
+
+## 管理系统功能
+1. 添加/删除/修改 DeployConfig 条目
+2. 查看某个网站配置下的所有部署
+3. 更改某个网站部署的当前使用版本, 通过云函数 Deploy.SetDeploy({id:string}) 设置部署的objectId 来更改
