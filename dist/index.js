@@ -25,6 +25,38 @@ const vhost = require('vhost');
 //     redisPub?:Redis.Redis
 //     multer:multer.Instance
 // }
+/**
+ * 找到所有此host下的路由
+ */
+function FindAllRoutesInHosts(sites, hosts) {
+    let results = [];
+    for (let i = 0; i < sites.length; ++i) {
+        let site = sites[i];
+        let host;
+        if (typeof site.host == 'string') {
+            host = [site.host];
+        }
+        else {
+            host = site.host;
+        }
+        //host 是否有交集
+        if (hosts.filter(e => host.includes(e)).length == 0) {
+            continue;
+        }
+        let routes = {};
+        if (!site.route) {
+            routes['/'] = '';
+        }
+        else if (typeof site.route == 'string') {
+            routes[site.route] = '';
+        }
+        else {
+            routes = site.route;
+        }
+        results.push(...Object.keys(routes));
+    }
+    return [...new Set(results)];
+}
 const CHANNEL_DEPLOY_PREFIX = 'deploy-site-channel:deploy:';
 const CHANNEL_SETSITES_PREFIX = 'deploy-site-channel:setsites:';
 // let channel = CHANNEL_PREFIX
@@ -213,7 +245,7 @@ class DeploySite {
             if (typeof e.host == 'string') {
                 host = [e.host];
             }
-            {
+            else {
                 host = e.host;
             }
             const protocol = e.protocol;
@@ -238,7 +270,53 @@ class DeploySite {
                 }
                 paths.forEach(p => {
                     console.log('route:' + r + ' -> ' + path_1.default.join(deployPath, p));
+                    if (e.forceHttps || e.nonWww) {
+                        app.use(r, (req, res, next) => {
+                            if (req.hostname === 'localhost' || req.hostname.startsWith('127.0.0.1')) {
+                                return next();
+                            }
+                            let protocol = req.protocol;
+                            /**
+                             * https://stackoverflow.com/a/7014324
+                             *  better to use req.headers.host (per the actual answer), vs. req.host as had also been suggested.
+                             * The reason is that req.host strips the port number, so if you're not on the default :80 or :443 ports (e.g., express' default of :3000),
+                             * you'll break the URL
+                             */
+                            let hostname = req.headers.host || req.hostname;
+                            let needRedirect = false;
+                            if (e.forceHttps && protocol == 'http') {
+                                protocol = 'https';
+                                needRedirect = true;
+                            }
+                            if (e.nonWww && hostname.startsWith('www.')) {
+                                hostname = hostname.replace(/^www\./, '');
+                                needRedirect = true;
+                            }
+                            if (!needRedirect || req.hostname === 'localhost' || req.hostname.startsWith('127.0.0.1')) {
+                                return next();
+                            }
+                            res.redirect(protocol + '://' + hostname + req.originalUrl);
+                        });
+                    }
                     app.use(r, express_2.default.static(path_1.default.join(deployPath, p)));
+                    if (e.historyFallback && e.historyFallback.includes(r)) {
+                        // 找到所有此host下的其他路由
+                        let otherRoutes = FindAllRoutesInHosts(siteSettings, host).filter(e => e != r);
+                        app.use(r, (req, res, next) => {
+                            let otherFitRoutes = otherRoutes.filter(r => req.originalUrl.includes(r));
+                            let maxLength = Math.max(...otherFitRoutes.map(e => e.length));
+                            // 判断自身是否是所有路由配置中最长的(最符合的)
+                            if (r.length >= maxLength) {
+                                if (!r.startsWith('/')) {
+                                    r = '/' + r;
+                                }
+                                res.redirect(req.protocol + '://' + (req.headers.host || req.hostname) + r);
+                            }
+                            else {
+                                next();
+                            }
+                        });
+                    }
                 });
             });
             host.forEach(h => {

@@ -20,16 +20,38 @@ export interface Version {
 export type DeployType='major' | 'minor' | 'patch'
 
 interface SiteSetting<IDType>{
+    /**
+     * 部署名, 用以标示不同的网站提交内容
+     */
     name:string
+    /**
+     * 访问此网站的域名
+     */
     host:string | string[]
     protocol:string[],
+    /**
+     * 部署key, 用以认证部署提交
+     */
     key:string
     /**
      * 路由, 或者 路由-路径 的映射列表
      */
-    route?:string | {[key:string]:string|string[]}
+    route?:string | {[key:string]:string}
 
     resultCallback?: (err?:{name:string,error:string}, msg?:{name:string,id:IDType}) =>void
+
+    /**
+     * 是否强制使用https, 非https访问则跳转到https
+     */
+    forceHttps?: boolean
+    /**
+     * 是否强制使用非www, www地址则跳转到非www地址
+     */
+    nonWww?: boolean
+    /**
+     * 使用fallback的路由, 没有静态资源时, 跳转到路由的根路径
+     */
+    historyFallback? : string[]
 }
 
 type SaveCallback<T> = (
@@ -85,6 +107,37 @@ interface ConstructorParam<IDType>{
 //     redisPub?:Redis.Redis
 //     multer:multer.Instance
 // }
+
+/**
+ * 找到所有此host下的路由
+ */
+function FindAllRoutesInHosts(sites:SiteSetting<any>[],hosts:string[]):string[]{
+    let results : string[] = []
+    for(let i=0;i<sites.length;++i){
+        let site = sites[i]
+        
+        let host:string[]
+        if(typeof site.host == 'string'){
+            host = [site.host]
+        }else{
+            host = site.host as string[]
+        }
+        //host 是否有交集
+        if(hosts.filter(e=>host.includes(e)).length==0){
+            continue
+        }
+        let routes:{[key:string]:string|string[]} = {}
+        if(! site.route){
+            routes['/'] = ''
+        }else if(typeof site.route == 'string'){
+            routes[site.route] =''
+        }else{
+            routes = site.route
+        }
+        results.push( ...Object.keys(routes) )
+    }
+    return [...new Set(results)]
+}
 
 const CHANNEL_DEPLOY_PREFIX = 'deploy-site-channel:deploy:'
 const CHANNEL_SETSITES_PREFIX = 'deploy-site-channel:setsites:'
@@ -288,7 +341,7 @@ export class DeploySite<IDType>{
             let host:string[]
             if(typeof e.host == 'string'){
                 host = [e.host]
-            }{
+            }else{
                 host = e.host as string[]
             }
             
@@ -313,7 +366,52 @@ export class DeploySite<IDType>{
                 }
                 paths.forEach(p=>{
                     console.log('route:'+r+' -> '+path.join(deployPath,p))
+                    if(e.forceHttps || e.nonWww){
+                        app.use(r,(req: Request, res: Response, next: NextFunction)=>{
+                            if (req.hostname === 'localhost' || req.hostname.startsWith('127.0.0.1')) {
+                                return next();
+                            }
+                            let protocol = req.protocol
+                            /**
+                             * https://stackoverflow.com/a/7014324
+                             *  better to use req.headers.host (per the actual answer), vs. req.host as had also been suggested. 
+                             * The reason is that req.host strips the port number, so if you're not on the default :80 or :443 ports (e.g., express' default of :3000), 
+                             * you'll break the URL
+                             */
+                            let hostname = req.headers.host || req.hostname
+                            let needRedirect = false
+                            if(e.forceHttps && protocol=='http'){
+                                protocol = 'https'
+                                needRedirect = true
+                            }
+                            if(e.nonWww && hostname.startsWith('www.')){
+                                hostname = hostname.replace(/^www\./, '')
+                                needRedirect = true
+                            }
+                            if (!needRedirect || req.hostname === 'localhost' || req.hostname.startsWith('127.0.0.1')) {
+                                return next();
+                            }
+                            res.redirect( protocol + '://' + hostname + req.originalUrl);
+                        })
+                    }
                     app.use(r,express.static(path.join(deployPath,p)))
+                    if(e.historyFallback&&e.historyFallback.includes(r)){
+                        // 找到所有此host下的其他路由
+                        let otherRoutes = FindAllRoutesInHosts(siteSettings,host).filter(e=>e!=r)
+                        app.use(r,(req: Request, res: Response, next: NextFunction)=>{
+                            let otherFitRoutes = otherRoutes.filter(r=>req.originalUrl.includes(r))
+                            let maxLength = Math.max(...otherFitRoutes.map(e=>e.length)) 
+                            // 判断自身是否是所有路由配置中最长的(最符合的)
+                            if(r.length>=maxLength){
+                                if(!r.startsWith('/')){
+                                    r = '/'+r
+                                }
+                                res.redirect( req.protocol + '://' + (req.headers.host || req.hostname) + r);
+                            }else{
+                                next();
+                            }
+                        })
+                    }
                 })
             })
             host.forEach(h=>{

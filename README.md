@@ -140,6 +140,9 @@ key:string -- 部署key, 用以认证部署提交
 route:{[key:string]:string} -- 路由-文件夹路径 的映射列表 . 留空表示根路由使用根目录
 host:string[] -- 访问此网站的域名
 link: string -- 部署信息提示工具中的链接, 用了指向部署的目标网站
+forceHttps: boolean -- 是否强制使用https, 非https访问则跳转到https
+nonWww: boolean -- 是否强制使用非www, www地址则跳转到非www地址
+historyFallback : string[] -- 使用fallback的路由, 没有静态资源时, 跳转到路由的根路径
 ```
 
 ### Deploy表

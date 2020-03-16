@@ -8,15 +8,24 @@ export interface Version {
 }
 export declare type DeployType = 'major' | 'minor' | 'patch';
 interface SiteSetting<IDType> {
+    /**
+     * 部署名, 用以标示不同的网站提交内容
+     */
     name: string;
+    /**
+     * 访问此网站的域名
+     */
     host: string | string[];
     protocol: string[];
+    /**
+     * 部署key, 用以认证部署提交
+     */
     key: string;
     /**
      * 路由, 或者 路由-路径 的映射列表
      */
     route?: string | {
-        [key: string]: string | string[];
+        [key: string]: string;
     };
     resultCallback?: (err?: {
         name: string;
@@ -25,6 +34,18 @@ interface SiteSetting<IDType> {
         name: string;
         id: IDType;
     }) => void;
+    /**
+     * 是否强制使用https, 非https访问则跳转到https
+     */
+    forceHttps?: boolean;
+    /**
+     * 是否强制使用非www, www地址则跳转到非www地址
+     */
+    nonWww?: boolean;
+    /**
+     * 使用fallback的路由, 没有静态资源时, 跳转到路由的根路径
+     */
+    historyFallback?: string[];
 }
 declare type SaveCallback<T> = (params: {
     name: string;
