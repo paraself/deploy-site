@@ -227,10 +227,8 @@ class DeploySite {
         // router.use(bodyParser.urlencoded({
         //     extended: false
         // }));
+        // 让所有路由路径都以 /  开头
         siteSettings.forEach(e => {
-            console.log('create routerHost for ' + e.name);
-            let app = express_1.Router();
-            let deployPath = path_1.default.join(this.deployPath, encodeURIComponent(e.name));
             let routes = {};
             if (!e.route) {
                 routes['/'] = '';
@@ -241,6 +239,23 @@ class DeploySite {
             else {
                 routes = e.route;
             }
+            Object.keys(routes).forEach(e => {
+                if (!e.startsWith('/')) {
+                    routes['/' + e] = routes[e];
+                    delete routes[e];
+                }
+            });
+            e.route = routes;
+            e.historyFallback && e.historyFallback.forEach((v, i) => {
+                if (!v.startsWith('/')) {
+                    e.historyFallback[i] = '/' + v;
+                }
+            });
+        });
+        siteSettings.forEach(e => {
+            console.log('create routerHost for ' + e.name);
+            let app = express_1.Router();
+            let deployPath = path_1.default.join(this.deployPath, encodeURIComponent(e.name));
             let host;
             if (typeof e.host == 'string') {
                 host = [e.host];
@@ -248,6 +263,7 @@ class DeploySite {
             else {
                 host = e.host;
             }
+            const routes = e.route;
             const protocol = e.protocol;
             // app.use('/static-'+e.key,express.static(e.deployPath))
             // app.use((req: Request, res: Response, next: NextFunction)=>{
@@ -261,13 +277,13 @@ class DeploySite {
             //     }
             // })
             Object.keys(routes).forEach(r => {
-                let paths;
-                if (typeof routes[r] == 'string') {
-                    paths = [routes[r]];
-                }
-                else {
-                    paths = routes[r];
-                }
+                // let paths:string[];
+                // if(typeof routes[r] == 'string'){
+                //     paths = [routes[r] as string]
+                // }else{
+                //     paths = routes[r] as string[]
+                // }
+                const paths = [routes[r]];
                 paths.forEach(p => {
                     console.log('route:' + r + ' -> ' + path_1.default.join(deployPath, p));
                     if (e.forceHttps || e.nonWww) {
@@ -303,13 +319,10 @@ class DeploySite {
                         // 找到所有此host下的其他路由
                         let otherRoutes = FindAllRoutesInHosts(siteSettings, host).filter(e => e != r);
                         app.use(r, (req, res, next) => {
-                            let otherFitRoutes = otherRoutes.filter(r => req.originalUrl.includes(r));
+                            let otherFitRoutes = otherRoutes.filter(r => req.originalUrl.startsWith(r));
                             let maxLength = Math.max(...otherFitRoutes.map(e => e.length));
                             // 判断自身是否是所有路由配置中最长的(最符合的)
                             if (r.length >= maxLength) {
-                                if (!r.startsWith('/')) {
-                                    r = '/' + r;
-                                }
                                 res.redirect(req.protocol + '://' + (req.headers.host || req.hostname) + r);
                             }
                             else {
