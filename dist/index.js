@@ -330,8 +330,8 @@ class DeploySite {
                             else {
                                 next();
                             }
-                            app.use(r, express_2.default.static(path_1.default.join(deployPath, p)));
                         });
+                        app.use(r, express_2.default.static(path_1.default.join(deployPath, p)));
                     }
                 });
             });

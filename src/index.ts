@@ -425,8 +425,8 @@ export class DeploySite<IDType>{
                             }else{
                                 next();
                             }
-                            app.use(r,express.static(path.join(deployPath,p)))
                         })
+                        app.use(r,express.static(path.join(deployPath,p)))
                     }
                 })
             })
