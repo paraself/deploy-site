@@ -323,7 +323,9 @@ class DeploySite {
                             let maxLength = Math.max(...otherFitRoutes.map(e => e.length));
                             // 判断自身是否是所有路由配置中最长的(最符合的)
                             if (r.length >= maxLength) {
-                                res.redirect(req.protocol + '://' + (req.headers.host || req.hostname) + r);
+                                req.url = r;
+                                next();
+                                // res.redirect( req.protocol + '://' + (req.headers.host || req.hostname) + r);
                             }
                             else {
                                 next();
