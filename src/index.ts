@@ -407,6 +407,7 @@ export class DeploySite<IDType>{
                             if (!needRedirect || req.hostname === 'localhost' || req.hostname.startsWith('127.0.0.1')) {
                                 return next();
                             }
+                            console.log(req .originalUrl+' redirect '+protocol + '://' + hostname + req.originalUrl)
                             res.redirect( protocol + '://' + hostname + req.originalUrl);
                         })
                     }
@@ -417,8 +418,11 @@ export class DeploySite<IDType>{
                         app.use(r,(req: Request, res: Response, next: NextFunction)=>{
                             let otherFitRoutes = otherRoutes.filter(r=>req.originalUrl.startsWith(r))
                             let maxLength = Math.max(...otherFitRoutes.map(e=>e.length)) 
+                            console.log(req.originalUrl)
+                            console.log(req.url)
                             // 判断自身是否是所有路由配置中最长的(最符合的)
                             if(r.length>=maxLength){
+                                console.log(`req.url = '/'`)
                                 req.url = '/'
                                 next();
                                 // res.redirect( req.protocol + '://' + (req.headers.host || req.hostname) + r);
